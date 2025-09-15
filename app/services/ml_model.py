@@ -23,7 +23,7 @@ except Exception:
     clip_processor = None
     _clip_ready = False
 
-# Generic ImageNet fallback classifier (vit)
+# Generic ImageNet fallback classifier (ViT)
 VIT_NAME = os.getenv("HF_VIT_NAME", "google/vit-base-patch16-224")
 vit_classifier = pipeline("image-classification", model=VIT_NAME)
 
@@ -50,29 +50,29 @@ def _load_image_bytes(url):
     r = requests.get(url, timeout=15)
     return Image.open(BytesIO(r.content)).convert("RGB")
 
-# Attempt to use local YOLO (ultralytics) if enabled and available
+# Attempt to use local YOLO (ultralytics) if explicitly enabled AND installed
 ENABLE_LOCAL_YOLO = os.getenv("ENABLE_LOCAL_YOLO", "false").lower() in ("1","true","yes")
+YOLO_AVAILABLE = False
 if ENABLE_LOCAL_YOLO:
     try:
         from ultralytics import YOLO
         YOLO_AVAILABLE = True
-    except Exception:
+    except ImportError:
         YOLO_AVAILABLE = False
-else:
-    YOLO_AVAILABLE = False
+
 
 def classify_image(image_url: str, domain: str = "pest", top_k: int = 3):
     """
     domain: 'pest' | 'disease' | 'generic'
     Returns: list of dicts {"label":..., "score":...}
     """
-    # 1) If domain == 'pest' and local YOLO enabled & available, try object detection
+
+    # 1) If domain == 'pest' and local YOLO enabled & available
     if domain == "pest" and YOLO_AVAILABLE:
         weights = os.getenv("YOLO_WEIGHTS_PATH", "./models/yolo11s-pest-detection.pt")
         if os.path.exists(weights):
             model = YOLO(weights)
-            results = model.predict(source=image_url, imgsz=640, conf=0.2)  # returns Results objects
-            # convert to list
+            results = model.predict(source=image_url, imgsz=640, conf=0.2)
             out = []
             for r in results:
                 for box in r.boxes:
@@ -81,30 +81,35 @@ def classify_image(image_url: str, domain: str = "pest", top_k: int = 3):
                     out.append({"label": label, "score": conf})
             out = sorted(out, key=lambda x: x["score"], reverse=True)
             return out[:top_k]
-        # else fallthrough to CLIP/vit
+        # else: fallthrough
 
-    # 2) If domain == 'disease' and HF model available, call HF inference model trained on PlantVillage
+    # 2) If domain == 'disease' and HF model available, call HF inference model
     if domain == "disease" and HF_API_KEY:
-        # recommended HF model for plant disease (MobileNetV2 PlantVillage)
-        hf_model = os.getenv("HF_DISEASE_MODEL", "linkanjarad/mobilenet_v2_1.0_224-plant-disease-identification")
+        hf_model = os.getenv(
+            "HF_DISEASE_MODEL",
+            "linkanjarad/mobilenet_v2_1.0_224-plant-disease-identification",
+        )
         try:
             resp = hf_image_inference(hf_model, image_url)
-            # HF image-classification typically returns a list of {"label":..., "score":...}
             if isinstance(resp, list):
                 return resp[:top_k]
         except Exception:
             pass
 
-    # 3) Attempt CLIP zero-shot if we have label lists and CLIP loaded
+    # 3) CLIP zero-shot if labels exist and CLIP is ready
     labels_path = os.path.join(DATA_DIR, f"{domain}_labels.json")
     if os.path.exists(labels_path) and _clip_ready:
         candidate_labels = _load_labels(labels_path)
-        # build inputs
         img = _load_image_bytes(image_url)
-        inputs = clip_processor(text=candidate_labels, images=img, return_tensors="pt", padding=True).to(clip_model.device)
+        inputs = clip_processor(
+            text=candidate_labels, images=img, return_tensors="pt", padding=True
+        ).to(clip_model.device)
         with torch.no_grad():
             image_embeds = clip_model.get_image_features(pixel_values=inputs["pixel_values"])
-            text_embeds = clip_model.get_text_features(input_ids=inputs["input_ids"], attention_mask=inputs.get("attention_mask"))
+            text_embeds = clip_model.get_text_features(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs.get("attention_mask"),
+            )
         image_embeds = image_embeds / image_embeds.norm(p=2, dim=-1, keepdim=True)
         text_embeds = text_embeds / text_embeds.norm(p=2, dim=-1, keepdim=True)
         sims = (text_embeds @ image_embeds.T).squeeze(1)

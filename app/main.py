@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db import init_db
 from app.routers import pest, disease, climate
-
+# import gradio as gr
 
 app = FastAPI(title="Agri AI Services", version="1.0")
 
@@ -29,3 +29,6 @@ app.include_router(climate.router)
 @app.get("/")
 def root():
     return {"status": "ok", "service": "agri-ai"}
+
+# demo = gr.Interface(fn=root, inputs="text", outputs="text")
+# demo.launch()
